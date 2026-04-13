@@ -1,0 +1,19 @@
+# Vivado/Vitis HLS generated files
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.srcs/
+*.xpr
+*.log
+*.jou
+*.str
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
