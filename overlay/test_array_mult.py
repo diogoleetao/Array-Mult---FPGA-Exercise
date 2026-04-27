@@ -1,91 +1,63 @@
 """
-Test for the array_mult on Ultra96-V2
-Multiplies an array by scalar on the FPGA, reads back
-Uses direct DMA register access
+Functional test for the array_mult v2 IP on Ultra96-V2
+Tests multiple array sizes (TLAST-based variable length)
 """
 
 import numpy as np
-import time
-from pynq import Overlay, allocate
+from hw_config import MAX_ARRAY_SIZE, SCALAR
+from hw_driver import ArrayMultDriver
 
-ARRAY_SIZE = 1024
-SCALAR = 7
+TEST_SIZES = [1, 10, 256, 1024, 4096, 16384]
 
+# --- Setup hardware ---
 print("Loading overlay...")
-ol = Overlay("/home/xilinx/array_mult/array_mult.bit")
-print(f"IP blocks: {list(ol.ip_dict.keys())}")
+hw = ArrayMultDriver()
+print()
 
-dma = ol.axi_dma_0
-ip = ol.array_mult_0
+# Fill input buffer once (max size)
+for i in range(MAX_ARRAY_SIZE):
+    hw.a[i] = i + 1
+hw.a.sync_to_device()
 
-# Contiguous buffers for DMA transfers
-a = allocate(shape=(ARRAY_SIZE,), dtype=np.int32)
-b = allocate(shape=(ARRAY_SIZE,), dtype=np.int32)
+hw.set_scalar(SCALAR)
 
-for i in range(ARRAY_SIZE):
-    a[i] = i + 1
-    b[i] = 0
+# --- Test each size ---
+total_errors = 0
 
-a.sync_to_device()
-b.sync_to_device()
+for size in TEST_SIZES:
+    hw.set_array_size(size)
 
-# Reset DMA channels
-dma.mmio.write(0x00, 0b100)
-dma.mmio.write(0x30, 0b100)
-time.sleep(0.01)
+    # Clear output
+    for i in range(size):
+        hw.b[i] = 0
+    hw.b.sync_to_device()
 
-# Write scalar via AXI-Lite
-ip.write(0x10, SCALAR)
+    hw.setup()
+    hw.run()
+    hw.b.sync_from_device()
 
-# Start the IP. bit 0 = ap_start
-ip.write(0x00, 0b1)
+    errors = 0
+    for i in range(size):
+        expected = (i + 1) * SCALAR
+        if hw.b[i] != expected:
+            print(f"  ERROR at index {i}: got {hw.b[i]}, expected {expected}")
+            errors += 1
+            if errors > 5:
+                print("  ... (stopping after 5 errors)")
+                break
 
-# S2MM: set up receive first
-dma.mmio.write(0x30, 0b1)
-dma.mmio.write(0x48, b.physical_address & 0xFFFFFFFF)
-dma.mmio.write(0x4C, (b.physical_address >> 32) & 0xFFFFFFFF)
-dma.mmio.write(0x58, ARRAY_SIZE * 4)
+    if errors == 0:
+        print(f"PASS — size={size}, scalar={SCALAR}  "
+              f"(a[0]={hw.a[0]}*{SCALAR}={hw.b[0]}, "
+              f"a[{size-1}]={hw.a[size-1]}*{SCALAR}={hw.b[size-1]})")
+    else:
+        print(f"FAIL — size={size}, {errors} errors")
+    total_errors += errors
 
-# MM2S: send input data
-dma.mmio.write(0x00, 0b1)
-dma.mmio.write(0x18, a.physical_address & 0xFFFFFFFF)
-dma.mmio.write(0x1C, (a.physical_address >> 32) & 0xFFFFFFFF)
-dma.mmio.write(0x28, ARRAY_SIZE * 4)
-
-# Wait for both channels to complete
-timeout = 5.0
-start = time.time()
-while time.time() - start < timeout:
-    mm2s = dma.mmio.read(0x04)
-    s2mm = dma.mmio.read(0x34)
-    if (mm2s & 0b10) and (s2mm & 0b10):  # both idle
-        break
+print()
+if total_errors == 0:
+    print(f"ALL TESTS PASSED ({len(TEST_SIZES)} sizes)")
 else:
-    print(f"TIMEOUT — MM2S: 0x{mm2s:08x}, S2MM: 0x{s2mm:08x}")
-    exit(1)
+    print(f"TOTAL FAILURES: {total_errors}")
 
-elapsed = (time.time() - start) * 1000
-print(f"DMA completed in {elapsed:.2f} ms")
-
-b.sync_from_device()
-
-# Verify
-errors = 0
-for i in range(ARRAY_SIZE):
-    expected = (i + 1) * SCALAR
-    if b[i] != expected:
-        print(f"ERROR at index {i}: got {b[i]}, expected {expected}")
-        errors += 1
-        if errors > 10:
-            print("... (stopping after 10 errors)")
-            break
-
-if errors == 0:
-    print(f"PASS — all {ARRAY_SIZE} elements correct (scalar={SCALAR})")
-    print(f"  a[0]={a[0]} * {SCALAR} = {b[0]}")
-    print(f"  a[1023]={a[1023]} * {SCALAR} = {b[1023]}")
-else:
-    print(f"FAIL — {errors} errors")
-
-a.freebuffer()
-b.freebuffer()
+hw.free()

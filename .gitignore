@@ -1,3 +1,6 @@
+# Vitis IDE workspace
+_ide/
+
 # Vivado/Vitis HLS generated files
 *.cache/
 *.gen/
